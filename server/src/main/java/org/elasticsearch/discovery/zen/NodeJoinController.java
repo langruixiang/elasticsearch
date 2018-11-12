@@ -18,6 +18,17 @@
  */
 package org.elasticsearch.discovery.zen;
 
+import static org.elasticsearch.gateway.GatewayService.STATE_NOT_RECOVERED_BLOCK;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.lucene.store.AlreadyClosedException;
@@ -39,17 +50,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.DiscoverySettings;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-
-import static org.elasticsearch.gateway.GatewayService.STATE_NOT_RECOVERED_BLOCK;
 
 /**
  * This class processes incoming join request (passed zia {@link ZenDiscovery}). Incoming nodes
@@ -201,6 +201,9 @@ public class NodeJoinController extends AbstractComponent {
                 logger.trace("have enough joins for election. Got [{}], required [{}]", pendingMasterJoins,
                     electionContext.requiredMasterJoins);
             }
+            /*
+             * 此处会向返回 folower 的 joinRequest
+             */
             electionContext.closeAndBecomeMaster();
             electionContext = null; // clear this out so future joins won't be accumulated
         }
@@ -279,7 +282,8 @@ public class NodeJoinController extends AbstractComponent {
             Map<DiscoveryNode, ClusterStateTaskListener> tasks = getPendingAsTasks();
             final String source = "zen-disco-elected-as-master ([" + tasks.size() + "] nodes joined)";
 
-            tasks.put(BECOME_MASTER_TASK, (source1, e) -> {}); // noop listener, the election finished listener determines result
+            tasks.put(BECOME_MASTER_TASK, (source1, e) -> {
+            }); // noop listener, the election finished listener determines result
             tasks.put(FINISH_ELECTION_TASK, electionFinishedListener);
             masterService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
         }
@@ -398,10 +402,10 @@ public class NodeJoinController extends AbstractComponent {
      */
     private static final DiscoveryNode FINISH_ELECTION_TASK = new DiscoveryNode("_FINISH_ELECTION_",
         new TransportAddress(TransportAddress.META_ADDRESS, 0), Collections.emptyMap(), Collections.emptySet(), Version.CURRENT) {
-            @Override
-            public String toString() {
-                return ""; // this is not really task , so don't log anything about it...
-            }
+        @Override
+        public String toString() {
+            return ""; // this is not really task , so don't log anything about it...
+        }
     };
 
     class JoinTaskExecutor implements ClusterStateTaskExecutor<DiscoveryNode> {
@@ -414,7 +418,7 @@ public class NodeJoinController extends AbstractComponent {
             boolean nodesChanged = false;
             ClusterState.Builder newState;
 
-            if (joiningNodes.size() == 1  && joiningNodes.get(0).equals(FINISH_ELECTION_TASK)) {
+            if (joiningNodes.size() == 1 && joiningNodes.get(0).equals(FINISH_ELECTION_TASK)) {
                 return results.successes(joiningNodes).build(currentState);
             } else if (currentNodes.getMasterNode() == null && joiningNodes.contains(BECOME_MASTER_TASK)) {
                 assert joiningNodes.contains(FINISH_ELECTION_TASK) : "becoming a master but election is not finished " + joiningNodes;

@@ -322,6 +322,9 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
 
         final ConnectionProfile connectionProfile =
             ConnectionProfile.buildSingleChannelProfile(TransportRequestOptions.Type.REG, requestDuration, requestDuration);
+        /*
+         * pingingRound 是一个关键的类, 负责向所有的 seedNodes 发送 ping, 并把结果记录在 pingCollections 中
+         */
         final PingingRound pingingRound = new PingingRound(pingingRoundIdGenerator.incrementAndGet(), seedNodes, resultsConsumer,
             nodes.getLocalNode(), connectionProfile);
         activePingingRounds.put(pingingRound.id(), pingingRound);
@@ -338,9 +341,18 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
                 sendPings(requestDuration, pingingRound);
             }
         };
+        /*
+         * 一共发送三次 pingRound, pingCollections 是一个 map, 多次发送自动去重, 增加了网络抖动情况下的鲁棒性
+         */
         threadPool.generic().execute(pingSender);
         threadPool.schedule(TimeValue.timeValueMillis(scheduleDuration.millis() / 3), ThreadPool.Names.GENERIC, pingSender);
         threadPool.schedule(TimeValue.timeValueMillis(scheduleDuration.millis() / 3 * 2), ThreadPool.Names.GENERIC, pingSender);
+
+        /*
+         * finishPingingRound 执行 pingConsumer 的 accept 函数
+         * 外边传进来的是 CompleteableFuture的complete, 所以此处CompleteableFuture.get()停止阻塞返回pingCollection
+         * 见ZenDiscovery.java pingAndWait函数
+         */
         threadPool.schedule(scheduleDuration, ThreadPool.Names.GENERIC, new AbstractRunnable() {
             @Override
             protected void doRun() throws Exception {
@@ -463,6 +475,9 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
 
     protected void sendPings(final TimeValue timeout, final PingingRound pingingRound) {
         final ClusterState lastState = contextProvider.clusterState();
+        /*
+         * 构造 pingRequest, 包含本身节点信息
+         */
         final UnicastPingRequest pingRequest = new UnicastPingRequest(pingingRound.id(), timeout, createPingResponse(lastState));
 
         Set<DiscoveryNode> nodesFromResponses = temporalResponses.stream().map(pingResponse -> {
@@ -471,6 +486,11 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
             return pingResponse.node();
         }).collect(Collectors.toSet());
 
+        /*
+         * 构造要发送请求的节点集合, 包含两部分:
+         * 1. seed nodes, 在配置文件中配置
+         * 2. 所有给自己发送过 ping 请求的节点
+         */
         // dedup by address
         final Map<TransportAddress, DiscoveryNode> uniqueNodesByAddress =
             Stream.concat(pingingRound.getSeedNodes().stream(), nodesFromResponses.stream())
@@ -584,21 +604,44 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
         };
     }
 
+    /*
+     * 节点收到 pingRequest 的处理逻辑
+     */
     private UnicastPingResponse handlePingRequest(final UnicastPingRequest request) {
         assert clusterName.equals(request.pingResponse.clusterName()) :
             "got a ping request from a different cluster. expected " + clusterName + " got " + request.pingResponse.clusterName();
+
+        /*
+         * 每收到一个请求加到 temporalResponses 中
+         */
         temporalResponses.add(request.pingResponse);
         // add to any ongoing pinging
+
+        /*
+         * 加到 pingingCollection 中
+         */
         activePingingRounds.values().forEach(p -> p.addPingResponseToCollection(request.pingResponse));
+
+        /*
+         * temporalResponse 中的 response 会定时过期
+         */
         threadPool.schedule(TimeValue.timeValueMillis(request.timeout.millis() * 2), ThreadPool.Names.SAME,
             () -> temporalResponses.remove(request.pingResponse));
 
+        /*
+         * 返回给请求节点的 responses 集合包含两部分
+         * 1. 自己曾经收到ping 请求的节点
+         * 2. 本身节点
+         */
         List<PingResponse> pingResponses = CollectionUtils.iterableAsArrayList(temporalResponses);
         pingResponses.add(createPingResponse(contextProvider.clusterState()));
 
         return new UnicastPingResponse(request.id, pingResponses.toArray(new PingResponse[pingResponses.size()]));
     }
 
+    /*
+     * 节点收到 pingRequest 后返回 response, 关键逻辑见handlePingRequest
+     */
     class UnicastPingRequestHandler implements TransportRequestHandler<UnicastPingRequest> {
 
         @Override
