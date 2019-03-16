@@ -1,3 +1,6 @@
+h1. 选主添加中文注释 可参考 https://niceaz.com/2018/11/12/es-zen-discovery-master-election/
+
+
 h1. Elasticsearch
 
 h2. A Distributed RESTful Search Engine
